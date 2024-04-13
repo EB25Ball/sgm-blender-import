@@ -19,7 +19,7 @@ def parse_sgm_file(filename):
         version = struct.unpack('<B', file.read(1))[0]
         print(f"File format version: {version}")
 
-        num_materials = struct.unpack('<B', file.read(1))[0]
+                num_materials = struct.unpack('<B', file.read(1))[0]
         materials = []
         for _ in range(num_materials):
             material_id = struct.unpack('<B', file.read(1))[0]
@@ -29,17 +29,18 @@ def parse_sgm_file(filename):
                 image_count = struct.unpack('<B', file.read(1))[0]
                 images = []
                 for _ in range(image_count):
-                    texture_type_hint = struct.unpack('<B', file.read(1))[0]
-                    filename_length = struct.unpack('<H', file.read(2))[0]
-                    filename = file.read(filename_length).decode('utf-8')
-                    images.append((texture_type_hint, filename))
+                    usage_hint = struct.unpack('<B', file.read(1))[0]
+                    texname_len = struct.unpack('<H', file.read(2))[0] - 1
+                    texname = struct.unpack(f'<{texname_len}s', file.read(texname_len))[0].decode("utf_8")
+                    file.seek(1, 1) # skip null terminator
+                    images.append((texname, usage_hint))
                 uv_data.append(images)
             color_count = struct.unpack('<B', file.read(1))[0]
             colors = []
             for _ in range(color_count):
-                color_type_hint = struct.unpack('<B', file.read(1))[0]
-                color_rgba = struct.unpack('<ffff', file.read(16))
-                colors.append((color_type_hint, color_rgba))
+                color_id = struct.unpack('<B', file.read(1))[0]
+                color = struct.unpack('<ffff', file.read(16))
+                colors.append((color, color_id))
             materials.append({
                 'material_id': material_id,
                 'uv_data': uv_data,
