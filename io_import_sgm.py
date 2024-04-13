@@ -4,7 +4,7 @@ bl_info = {
     'version': (1, 0, 0),
     'blender': (4, 1, 0),
     'description': 'Imports .sgm model files and .sga animation files into Blender.',
-    'category': 'Import-Export',
+    'category': 'Import',
     'location': 'File -> Import -> Rayne Model (.sgm, .sga)'
 }
 
