@@ -19,7 +19,7 @@ def parse_sgm_file(filename):
         version = struct.unpack('<B', file.read(1))[0]
         print(f"File format version: {version}")
 
-                num_materials = struct.unpack('<B', file.read(1))[0]
+        num_materials = struct.unpack('<B', file.read(1))[0]
         materials = []
         for _ in range(num_materials):
             material_id = struct.unpack('<B', file.read(1))[0]
@@ -32,6 +32,7 @@ def parse_sgm_file(filename):
                     usage_hint = struct.unpack('<B', file.read(1))[0]
                     texname_len = struct.unpack('<H', file.read(2))[0] - 1
                     texname = struct.unpack(f'<{texname_len}s', file.read(texname_len))[0].decode("utf_8")
+                    print(texname,image_count,"image count")
                     file.seek(1, 1) # skip null terminator
                     images.append((texname, usage_hint))
                 uv_data.append(images)
@@ -46,6 +47,7 @@ def parse_sgm_file(filename):
                 'uv_data': uv_data,
                 'colors': colors
             })
+            print(color_count, "counting the colors")
 
         num_meshes = struct.unpack('<B', file.read(1))[0]
         meshes = [] 
