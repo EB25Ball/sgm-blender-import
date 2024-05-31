@@ -1,161 +1,207 @@
 bl_info = {
     'name': 'Rayne Model and Animation Formats (.sgm, .sga)',
     'author': 'EBSpark',
-    'version': (1, 0, 0),
+    'version': (2, 0, 0),
     'blender': (4, 1, 0),
     'description': 'Imports .sgm model files and .sga animation files into Blender.',
     'category': 'Import',
     'location': 'File -> Import -> Rayne Model (.sgm, .sga)'
 }
 
-import struct
 import bpy
+import struct
+import os
+from bpy_extras.io_utils import ImportHelper
+from bpy.types import Operator
+from bpy.props import StringProperty
 
-def parse_sgm_file(filename):
-    with open(filename, "rb") as file:
-        magic_number = struct.unpack('<L', file.read(4))[0]
-        if magic_number != 352658064:
-            raise ValueError("Invalid magic number, not an sgm file")
-        version = struct.unpack('<B', file.read(1))[0]
-        print(f"File format version: {version}")
+class SGMFileReader:
+    def __init__(self, filename):
+        self.filename = filename
+        self.magic_number = None
+        self.version = None
+        self.materials = []
+        self.meshes = []
+        self.animations = []
 
-        num_materials = struct.unpack('<B', file.read(1))[0]
-        materials = []
-        for _ in range(num_materials):
-            material_id = struct.unpack('<B', file.read(1))[0]
-            uv_count = struct.unpack('<B', file.read(1))[0]
-            uv_data = []
-            for _ in range(uv_count):
-                image_count = struct.unpack('<B', file.read(1))[0]
-                images = []
-                for _ in range(image_count):
-                    usage_hint = struct.unpack('<B', file.read(1))[0]
-                    texname_len = struct.unpack('<H', file.read(2))[0] - 1
-                    texname = struct.unpack(f'<{texname_len}s', file.read(texname_len))[0].decode("utf_8")
-                    print(texname,image_count,"image count")
-                    file.seek(1, 1) # skip null terminator
-                    images.append((texname, usage_hint))
-                uv_data.append(images)
-            color_count = struct.unpack('<B', file.read(1))[0]
-            colors = []
-            for _ in range(color_count):
-                color_id = struct.unpack('<B', file.read(1))[0]
-                color = struct.unpack('<ffff', file.read(16))
-                colors.append((color, color_id))
-            materials.append({
-                'material_id': material_id,
-                'uv_data': uv_data,
-                'colors': colors
-            })
-            print(color_count, "counting the colors")
+    def read(self):
+        with open(self.filename, 'rb') as file:
+            self.magic_number = struct.unpack('I', file.read(4))[0]
+            self.version = struct.unpack('B', file.read(1))[0]
 
-        num_meshes = struct.unpack('<B', file.read(1))[0]
-        meshes = [] 
-        for _ in range(num_meshes):
-            vertices = []
-            indices = []
-            mesh_id = struct.unpack('<B', file.read(1))[0]
-            material_id = struct.unpack('<B', file.read(1))[0]
-            vertex_count = struct.unpack('<I', file.read(4))[0]
+            num_materials = struct.unpack('B', file.read(1))[0]
+            for _ in range(num_materials):
+                material = self._read_material(file)
+                self.materials.append(material)
 
-            uv_count = struct.unpack('<B', file.read(1))[0]
-            texdata_count  = struct.unpack('<B', file.read(1))[0]
+            num_meshes = struct.unpack('B', file.read(1))[0]
+            for _ in range(num_meshes):
+                mesh = self._read_mesh(file)
+                self.meshes.append(mesh)
+
+            has_animation = struct.unpack('B', file.read(1))[0]
+            if has_animation:
+                animation = self._read_animation(file)
+                self.animations.append(animation)
+
+    def _read_material(self, file):
+        material_id = struct.unpack('B', file.read(1))[0]
+        num_uv_sets = struct.unpack('B', file.read(1))[0]
+        textures = []
+        for _ in range(num_uv_sets):
+            num_textures = struct.unpack('B', file.read(1))[0]
+            for _ in range(num_textures):
+                texture_type_hint = struct.unpack('B', file.read(1))[0]
+                filename_length = struct.unpack('H', file.read(2))[0]
+                filename = file.read(filename_length).decode('utf-8')
+                if '*' in filename:
+                    model_directory = os.path.dirname(self.filename)
+                    files_in_directory = os.listdir(model_directory)
+                    for file_in_directory in files_in_directory:
+                        if filename.split('*')[0] in file_in_directory:
+                            filename = os.path.join(model_directory, file_in_directory).replace('*','png')
+                            break
+                textures.append((texture_type_hint, filename))
+
+        num_colors = struct.unpack('B', file.read(1))[0]
+        colors = []
+        for _ in range(num_colors):
+            color_type_hint = struct.unpack('B', file.read(1))[0]
+            color_rgba = struct.unpack('4f', file.read(16))
+            colors.append((color_type_hint, color_rgba))
+
+        return {
+            'material_id': material_id,
+            'textures': textures,
+            'colors': colors,
+        }
+
+    def _read_mesh(self, file):
+        mesh_id = struct.unpack('B', file.read(1))[0]
+        used_material_id = struct.unpack('B', file.read(1))[0]
+        num_vertices = struct.unpack('I', file.read(4))[0]
+        texcoord_count = struct.unpack('B', file.read(1))[0]
+        color_channel_count = struct.unpack('B', file.read(1))[0]
+        has_tangents = struct.unpack('B', file.read(1))[0]
+        has_bones = struct.unpack('B', file.read(1))[0]
+
+        vertex_data_format = 'fff'  # position
+        vertex_data_format += 'fff'  # normal
+        vertex_data_format += 'ff' * texcoord_count  # uvs
+        if color_channel_count > 0:
+            vertex_data_format += 'ffff'  # color
+        if has_tangents:
+            vertex_data_format += 'ffff'  # tangents
+        if has_bones:
+            vertex_data_format += 'ffff'  # weights
+            vertex_data_format += 'BBBB'  # bone indices
+
+        vertex_size = struct.calcsize(vertex_data_format)
+        vertices = [struct.unpack(vertex_data_format, file.read(vertex_size)) for _ in range(num_vertices)]
+
+        num_indices = struct.unpack('I', file.read(4))[0]
+        index_size = struct.unpack('B', file.read(1))[0]
+        index_format = 'H' if index_size == 2 else 'I'
+        indices = [struct.unpack(index_format, file.read(index_size))[0] for _ in range(num_indices)]
+
+        return {
+            'mesh_id': mesh_id,
+            'used_material_id': used_material_id,
+            'vertices': vertices,
+            'indices': indices,
+        }
+
+    def _read_animation(self, file):
+        animfilename_length = struct.unpack('H', file.read(2))[0]
+        animfilename = file.read(animfilename_length).decode('utf-8')
+        return {
+            'animfilename': animfilename,
+        }
+
+def create_material(material_data):
+    material = bpy.data.materials.new(name=f"Material_{material_data['material_id']}")
+    material.use_nodes = True
+    bsdf = material.node_tree.nodes["Principled BSDF"]
+
+    for texture_type_hint, texture_filename in material_data['textures']:
+        image_texture = material.node_tree.nodes.new('ShaderNodeTexImage')
+        image_texture.image = bpy.data.images.load(texture_filename)
+        if texture_type_hint == 0:  # Diffuse
+            material.node_tree.links.new(bsdf.inputs['Base Color'], image_texture.outputs['Color'])
+        elif texture_type_hint == 2:  # Specular
+            material.node_tree.links.new(bsdf.inputs['Specular'], image_texture.outputs['Color'])
+        elif texture_type_hint == 3:  # Roughness
+            material.node_tree.links.new(bsdf.inputs['Roughness'], image_texture.outputs['Color'])
+
+    for color_type_hint, color_rgba in material_data['colors']:
+        if color_type_hint == 0:  # Base Color
+            bsdf.inputs['Base Color'].default_value = color_rgba
+        elif color_type_hint == 2:  # Specular
+            bsdf.inputs['Specular'].default_value = color_rgba[0]  
+        elif color_type_hint == 3:  # Roughness
+            bsdf.inputs['Roughness'].default_value = color_rgba[0]  
             
-            has_tangents = struct.unpack('<B', file.read(1))[0]
-            has_bones = struct.unpack('<B', file.read(1))[0]
-            print(vertex_count,uv_count)
-            for _ in range(vertex_count):
-                position = struct.unpack('<fff', file.read(12))
-                normal = struct.unpack('<fff', file.read(12))
-                uvs = [struct.unpack('<ff', file.read(8)) for _ in range(uv_count)]
-                color = struct.unpack('<ffff', file.read(16)) if texdata_count  == 4 else None
-                tangent = struct.unpack('<fff', file.read(12)) if has_tangents else None
-                weights = None
-                bone_indices = None
-                if has_bones:
-                    weights = struct.unpack('<ffff', file.read(16))
-                    bone_indices = struct.unpack('<IIII', file.read(16))
-                vertex_data = {
-                    'position': position,
-                    'normal': normal,
-                    'uvs': uvs,
-                    'color': color,
-                    'tangents': tangent,
-                    'weights': weights,
-                    'bone_indices': bone_indices
-                }
-                vertices.append(vertex_data)
+    return material
 
-            index_count = struct.unpack('<I', file.read(4))[0]
-            index_size = struct.unpack('<B', file.read(1))[0]            
-            indices_format = '<I' if index_size == 4 else '<H'
-            indices = [struct.unpack(indices_format, file.read(index_size))[0] for _ in range(index_count)]
-            meshes.append({'id': mesh_id, 'material_id': material_id, 'vertices': vertices, 'indices': indices})
-    return meshes, materials
+def create_mesh(mesh_data, materials):
+    mesh = bpy.data.meshes.new(name=f"Mesh_{mesh_data['mesh_id']}")
+    obj = bpy.data.objects.new(name=f"Mesh_{mesh_data['mesh_id']}", object_data=mesh)
+    bpy.context.collection.objects.link(obj)
 
-def create_blender_objects(materials, meshes):
-    for material in materials:
-        mat = bpy.data.materials.new(name=f"Material_{material['material_id']}")        
-        for color in material['colors']:
-            if color[0] == 0:  # Assuming 0 is the type hint for diffuse color
-                mat.diffuse_color = color[1]
-        
-        for uv_data in material['uv_data']:
-            for image in uv_data:
-                # Load the image
-                img = bpy.data.images.load(image[1])
-                
-                # Create a texture and assign the image
-                tex = bpy.data.textures.new(name=f"Texture_{image[1]}", type='IMAGE')
-                tex.image = img
-                
-                # Add the texture to the material
-                mat_tex_slot = mat.texture_slots.add()
-                mat_tex_slot.texture = tex
+    vertices = [v[:3] for v in mesh_data['vertices']]
+    indices = mesh_data['indices']
 
-    for mesh_data in meshes:
-        mesh = bpy.data.meshes.new(name=f"Mesh_{mesh_data['id']}")
-        obj = bpy.data.objects.new(mesh.name, mesh)
-        bpy.context.scene.collection.objects.link(obj)
-        verts = [v['position'] for v in mesh_data['vertices']]
-        faces = [tuple(mesh_data['indices'][i:i+3]) for i in range(0, len(mesh_data['indices']), 3)]
-        mesh.from_pydata(verts, [], faces)
-        obj.data.materials.append(bpy.data.materials[f"Material_{mesh_data['material_id']}"])
+    mesh.from_pydata(vertices, [], [indices[i:i+3] for i in range(0, len(indices), 3)])
 
-class ImportSGM(bpy.types.Operator):
-    """Import an SGM file"""
+    if len(mesh_data['vertices'][0]) > 6:
+        uvs = [v[6:8] for v in mesh_data['vertices']]
+        uv_layer = mesh.uv_layers.new(name='UVMap')
+        mesh.uv_layers.active = uv_layer
+        for i, uv in enumerate(uvs):
+            uv_layer.data[i].uv = uv
+
+    if len(mesh_data['vertices'][0]) > 8:
+        colors = [v[8:12] for v in mesh_data['vertices']]
+        color_layer = mesh.vertex_colors.new(name='Col')
+        for i, col in enumerate(colors):
+            color_layer.data[i].color = col
+
+    used_material_id = mesh_data['used_material_id']
+    if used_material_id < len(materials):
+        obj.data.materials.append(materials[used_material_id])
+
+class IMPORT_OT_sgm(Operator, ImportHelper):
     bl_idname = "import_scene.sgm"
     bl_label = "Import SGM"
     bl_options = {'PRESET', 'UNDO'}
-    
-    filename_ext = ".sgm"
 
-    filter_glob: bpy.props.StringProperty(
+    filter_glob: StringProperty(
         default="*.sgm;*.sga",
         options={'HIDDEN'},
-        maxlen=255,
     )
-    filepath: bpy.props.StringProperty(subtype="FILE_PATH")
 
     def execute(self, context):
-        meshes,materials  = parse_sgm_file(self.filepath)
-        create_blender_objects(materials, meshes)
+        filepath = self.filepath
+        import_sgm(filepath)
         return {'FINISHED'}
 
-    def invoke(self, context, event):
-        context.window_manager.fileselect_add(self)
-        return {'RUNNING_MODAL'}
+def import_sgm(filename):
+    reader = SGMFileReader(filename)
+    reader.read()
 
+    materials = [create_material(mat_data) for mat_data in reader.materials]
+    for mesh_data in reader.meshes:
+        create_mesh(mesh_data, materials)
 
 def menu_func_import(self, context):
-    self.layout.operator(ImportSGM.bl_idname, text="Rayne Model (.sgm)")
+    self.layout.operator(IMPORT_OT_sgm.bl_idname, text="Rayne Model (.sgm, .sga)")
 
 def register():
-    bpy.utils.register_class(ImportSGM)
+    bpy.utils.register_class(IMPORT_OT_sgm)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
 def unregister():
-    bpy.utils.unregister_class(ImportSGM)
+    bpy.utils.unregister_class(IMPORT_OT_sgm)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
 
 if __name__ == "__main__":
